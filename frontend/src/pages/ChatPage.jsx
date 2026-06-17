@@ -94,10 +94,17 @@ export default function ChatPage() {
       <div className="message-list">
         {messages.length === 0 && (
           <div className="empty-state">
-            <p>Ask anything about DPCO ceiling prices — medicines, prices, years, S.O. numbers.</p>
-            <p className="hint">
-              Try: "What is the ceiling price of Paracetamol 500mg?" · "Which medicines had the highest price increase in 2022?"
-            </p>
+            <span className="empty-icon">💊</span>
+            <h3>DPCO Price Assistant</h3>
+            <p>Ask anything about Drug Price Control Order ceiling prices — medicines, manufacturers, S.O. numbers, and more.</p>
+            <div className="empty-hint">
+              <p className="empty-hint-label">Try asking</p>
+              <ul>
+                <li>What is the ceiling price of Paracetamol 500mg?</li>
+                <li>Which medicines had the highest price increase in 2022?</li>
+                <li>List all antibiotics under ₹10 per unit.</li>
+              </ul>
+            </div>
           </div>
         )}
         {messages.map((msg, i) => <MessageBubble key={i} message={msg} />)}
@@ -105,30 +112,32 @@ export default function ChatPage() {
       </div>
 
       <div className="chat-input-bar">
-        <textarea
-          ref={textareaRef}
-          className="input-textarea"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Ask about DPCO ceiling prices…"
-          disabled={loading}
-          rows={1}
-        />
-        <button
-          className="send-button"
-          onClick={sendMessage}
-          disabled={loading || !input.trim()}
-        >
-          {loading ? (
-            <span className="spinner" />
-          ) : (
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <line x1="22" y1="2" x2="11" y2="13" />
-              <polygon points="22 2 15 22 11 13 2 9 22 2" />
-            </svg>
-          )}
-        </button>
+        <div className="chat-input-inner">
+          <textarea
+            ref={textareaRef}
+            className="input-textarea"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Ask about DPCO ceiling prices…"
+            disabled={loading}
+            rows={1}
+          />
+          <button
+            className="send-button"
+            onClick={sendMessage}
+            disabled={loading || !input.trim()}
+          >
+            {loading ? (
+              <span className="spinner" />
+            ) : (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <line x1="22" y1="2" x2="11" y2="13" />
+                <polygon points="22 2 15 22 11 13 2 9 22 2" />
+              </svg>
+            )}
+          </button>
+        </div>
       </div>
     </div>
   )

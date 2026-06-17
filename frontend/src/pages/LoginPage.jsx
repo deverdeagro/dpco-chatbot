@@ -37,6 +37,7 @@ export default function LoginPage() {
     <div className="login-page">
       <div className="login-card">
         <div className="login-brand">
+          <span className="login-brand-icon">💊</span>
           <h1>DPCO Chatbot</h1>
           <p>Drug Price Control Order — 2016 to 2026</p>
         </div>
