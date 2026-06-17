@@ -27,3 +27,6 @@ dist-ssr
 
 backend/data
 __pycache__
+
+/form-filer/.chrome-profile
+/form-filer/debug

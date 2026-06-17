@@ -47,7 +47,13 @@ INSTALLED_APPS = [
     'drugs',
     'chat',
     'accounts',
+    'form_filer',
 ]
+
+MEDIA_ROOT = BASE_DIR / 'media'
+MEDIA_URL = '/media/'
+
+FORM_FILER_SCRIPT = os.getenv('FORM_FILER_SCRIPT', str(BASE_DIR.parent / 'form-filer' / 'index.js'))
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',

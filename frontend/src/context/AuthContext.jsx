@@ -54,7 +54,11 @@ export function AuthProvider({ children }) {
   // Authenticated fetch — auto-refreshes on 401
   const apiFetch = useCallback(async (url, options = {}) => {
     const token = auth?.access
-    const headers = { 'Content-Type': 'application/json', ...options.headers }
+    const isFormData = options.body instanceof FormData
+    const headers = {
+      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+      ...options.headers,
+    }
     if (token) headers['Authorization'] = `Bearer ${token}`
 
     let res = await fetch(url, { ...options, headers })
