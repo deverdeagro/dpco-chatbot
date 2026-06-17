@@ -4,3 +4,6 @@ psycopg2-binary>=2.9
 python-dotenv>=1.2
 openpyxl>=3.1
 django-filter>=25.0
+openai>=1.0
+django-cors-headers>=4.6
+djangorestframework-simplejwt>=5.3
