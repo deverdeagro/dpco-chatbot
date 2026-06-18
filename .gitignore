@@ -30,3 +30,5 @@ __pycache__
 
 /form-filer/.chrome-profile
 /form-filer/debug
+
+/backend/media
