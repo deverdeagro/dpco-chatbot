@@ -8,7 +8,8 @@
 function normalizeForPortal(text) {
   return String(text || '')
     .replace(/&/g, 'and')
-    .replace(/-/g, ' ')   // hyphens → spaces (portal names use spaces, not hyphens)
+    // Note: hyphens are NOT pre-replaced here — selectByTyping handles them dynamically
+    // because some portal entries use hyphens and some use spaces.
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -34,6 +35,11 @@ async function selectByTyping(frame, selectId, searchText, label) {
     return false;
   }
   await searchInput.click();
+  // Clear any stale text left over from a previous failed search attempt.
+  await searchInput.fill('');
+  await frame.waitForTimeout(150);
+
+  const activeOptions = frame.locator(`#${containerId} .chosen-results li.active-result`);
 
   let typedSoFar = '';
   for (const char of searchText) {
@@ -41,8 +47,18 @@ async function selectByTyping(frame, selectId, searchText, label) {
     typedSoFar += char;
     await frame.waitForTimeout(200);
 
-    const activeOptions = frame.locator(`#${containerId} .chosen-results li.active-result`);
-    const count = await activeOptions.count();
+    let count = await activeOptions.count();
+
+    // When a separator gives 0 results, swap it (hyphen ↔ space) and try once more.
+    if (count === 0 && (char === '-' || char === ' ')) {
+      const alt = char === '-' ? ' ' : '-';
+      await searchInput.press('Backspace');
+      typedSoFar = typedSoFar.slice(0, -1);
+      await searchInput.pressSequentially(alt, { delay: 60 });
+      typedSoFar += alt;
+      await frame.waitForTimeout(200);
+      count = await activeOptions.count();
+    }
 
     if (count === 0) {
       console.log(`  [FLAG] 0 options after typing "${typedSoFar}" for ${label}`);

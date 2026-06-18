@@ -2,6 +2,7 @@
 
 const { chromium } = require('playwright');
 const path = require('path');
+const fs = require('fs');
 
 const { readMrpRevRows, groupByManufacturer } = require('./lib/excel');
 const { selectByTyping } = require('./lib/chosenSelect');
@@ -219,8 +220,14 @@ async function processGroup(page, group, isLastGroup) {
   const groups = groupByManufacturer(rows);
   console.log(`Found ${rows.length} rows across ${groups.length} manufacturer group(s)`);
 
+  // Remove stale Chrome profile locks left by a previous crashed/killed session.
+  const profileDir = path.join(__dirname, '.chrome-profile');
+  for (const lockFile of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+    try { fs.unlinkSync(path.join(profileDir, lockFile)); } catch (_) {}
+  }
+
   const context = await chromium.launchPersistentContext(
-    path.join(__dirname, '.chrome-profile'),
+    profileDir,
     {
       channel: 'chrome',
       headless: false,
