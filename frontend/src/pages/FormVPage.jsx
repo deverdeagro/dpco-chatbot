@@ -190,8 +190,11 @@ export default function FormVPage() {
           {job.flagged_rows?.length > 0 && (
             <div className="formv-flagged">
               <h3 className="formv-flagged-title">
-                Flagged rows ({job.flagged_rows.length}) — could not be auto-processed
+                Not added ({job.flagged_rows.length}) — needs manual entry
               </h3>
+              <p className="formv-flagged-note">
+                These rows were not added to the form. Enter them manually on the portal before submitting.
+              </p>
               <div className="table-wrapper">
                 <table className="users-table">
                   <thead>

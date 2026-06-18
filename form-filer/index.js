@@ -258,6 +258,8 @@ async function processGroup(page, group, isLastGroup) {
 
   const addedCount = await countProductRows(frame);
   console.log(`\nGroup "${group.manufacturer}": ${addedCount} of ${group.rows.length} products added to the form. Review the browser and click Submit.`);
+  // Emit the cumulative flagged list now so the UI table reflects this group at its review point.
+  console.log(`[FLAGGED_ROWS:${JSON.stringify(flaggedRows)}]`);
   console.log(`[WAITING_FOR_SUBMIT:${group.manufacturer}]`);
 
   if (!isLastGroup) {

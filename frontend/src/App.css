@@ -808,8 +808,9 @@ details[open] .sql-disclosure summary::before { content: '▼'; }
   scrollbar-color: #334 transparent;
 }
 
-.formv-flagged { display: flex; flex-direction: column; gap: 10px; }
+.formv-flagged { display: flex; flex-direction: column; gap: 6px; }
 .formv-flagged-title { font-size: 14px; font-weight: 600; color: #dc2626; }
+.formv-flagged-note { font-size: 13px; color: var(--text-2); margin: 0 0 6px; }
 
 /* ─── Spinner ───────────────────────────────────────── */
 

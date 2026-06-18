@@ -60,7 +60,7 @@ def _run_job(job_id: int, excel_path: str) -> None:
 
             elif line.startswith('[FLAGGED_ROWS:'):
                 try:
-                    job.flagged_rows = json.loads(line[len('[FLAGGED_ROWS:'):])
+                    job.flagged_rows = json.loads(line[len('[FLAGGED_ROWS:'):-1])
                 except json.JSONDecodeError:
                     pass
 
