@@ -5,7 +5,8 @@ const path = require('path');
 const fs = require('fs');
 
 const { readMrpRevRows, groupByManufacturer } = require('./lib/excel');
-const { selectByTyping } = require('./lib/chosenSelect');
+const { selectByTyping, selectProductByTyping } = require('./lib/chosenSelect');
+const { compositionsMatch } = require('./lib/aiMatch');
 const { waitForElementInFrames, findFormFrame } = require('./lib/frames');
 const { snapshot, findOpenWidget } = require('./lib/debug');
 
@@ -54,17 +55,23 @@ async function goToAddForm(page) {
   throw new Error('Form frame did not appear after clicking Add');
 }
 
-async function waitForProductDetailsLoaded(frame, timeout = 15000) {
+function readComposition(frame) {
+  return frame.evaluate(() => {
+    const el = document.getElementById('composition');
+    return el ? el.value.trim() : '';
+  });
+}
+
+// Wait for the composition field to be populated after a product selection.
+// The field is cleared before selecting, so any non-empty value is the new one.
+async function waitForComposition(frame, timeout = 15000) {
   const start = Date.now();
   while (Date.now() - start < timeout) {
-    const val = await frame.evaluate(() => {
-      const el = document.getElementById('composition');
-      return el ? el.value.trim() : '';
-    });
-    if (val) return true;
+    const val = await readComposition(frame);
+    if (val) return val;
     await frame.waitForTimeout(300);
   }
-  return false;
+  return '';
 }
 
 // The portal uses bootstrap-datepicker with jQuery noConflict — cannot type directly.
@@ -113,17 +120,39 @@ async function setEffectiveDate(frame, ddmmyyyy) {
 }
 
 async function fillProductRow(frame, row) {
-  // Type brand name into product dropdown, narrow until 1 option remains
-  const productFound = await selectByTyping(frame, 'productId', row.brandName, 'Product');
-  if (!productFound) {
+  // Clear composition first so the value we read afterward is unambiguously the
+  // newly selected product's (not the previous row's, which lingers until AJAX).
+  await frame.evaluate(() => {
+    const el = document.getElementById('composition');
+    if (el) el.value = '';
+  });
+
+  // Type the brand stem, collect candidates, pick by strength (LLM breaks ties)
+  const sel = await selectProductByTyping(frame, 'productId', row, 'Product');
+  if (!sel.ok) {
     flaggedRows.push({ ...row, reason: 'Product not found by typing' });
     return false;
   }
+  console.log(`  Product → "${sel.chosenLabel}" [${sel.how}]`);
 
-  // Wait for AJAX to auto-fill composition/strength
-  const filled = await waitForProductDetailsLoaded(frame);
-  if (!filled) {
+  // Wait for AJAX to repopulate the (now-cleared) composition field
+  const portalComposition = await waitForComposition(frame);
+  if (!portalComposition) {
     console.log(`  [WARN] Composition did not auto-fill for: ${row.brandName}`);
+  }
+
+  // Verify the auto-filled composition matches the Excel composition by strength.
+  // A mismatch means we selected the wrong variant — flag it, never fill it.
+  const verdict = compositionsMatch(row.composition, portalComposition);
+  if (verdict === false) {
+    console.log(`  [FLAG] Composition mismatch for ${row.brandName}`);
+    console.log(`         Excel : ${row.composition}`);
+    console.log(`         Portal: ${portalComposition}`);
+    flaggedRows.push({ ...row, reason: `Composition mismatch — portal selected: "${sel.chosenLabel}"` });
+    return false;
+  }
+  if (verdict === null) {
+    console.log(`  [WARN] Could not verify composition by strength for ${row.brandName} (proceeding)`);
   }
 
   // #pts = PTD (not a typo — that's the portal's DOM id)
@@ -138,6 +167,16 @@ async function fillProductRow(frame, row) {
   return true;
 }
 
+// Every product committed to the grid carries a hidden productHiddenDtls input,
+// in either table (#Tbl1 scheduled / #Tbl2 non-scheduled). Counting these is the
+// ground truth for "was the product actually added".
+function countProductRows(frame) {
+  return frame.evaluate(() => document.querySelectorAll('input[name="productHiddenDtls"]').length);
+}
+
+// Clicks "Add Product" and verifies a row was actually appended. The portal
+// silently no-ops the Add when the product wasn't fully accepted (e.g. its
+// composition never loaded), so we trust the grid row count, not the click.
 async function clickAddProduct(page, frame, row) {
   // Dismiss any open datepicker before clicking the Add button
   await page.keyboard.press('Escape').catch(() => {});
@@ -148,13 +187,22 @@ async function clickAddProduct(page, frame, row) {
   }
   await page.waitForTimeout(200);
 
+  const before = await countProductRows(frame);
+
   try {
     await frame.click('#addPrd', { timeout: 8000 });
-    await page.waitForTimeout(1500);
   } catch (err) {
     await snapshot(page, frame, `addPrd-fail-row${row.srNo}`);
     throw err;
   }
+
+  // The add is AJAX and silent on failure — wait for the grid to actually grow.
+  const start = Date.now();
+  while (Date.now() - start < 8000) {
+    if (await countProductRows(frame) > before) return true;
+    await page.waitForTimeout(300);
+  }
+  return false;
 }
 
 async function processGroup(page, group, isLastGroup) {
@@ -193,8 +241,13 @@ async function processGroup(page, group, isLastGroup) {
     try {
       const ok = await fillProductRow(frame, row);
       if (ok) {
-        await clickAddProduct(page, frame, row);
-        console.log(`  ✓ Row ${row.srNo} added`);
+        const added = await clickAddProduct(page, frame, row);
+        if (added) {
+          console.log(`  ✓ Row ${row.srNo} added`);
+        } else {
+          console.log(`  [FLAG] Row ${row.srNo} (${row.brandName}): clicked Add but the portal added no row`);
+          flaggedRows.push({ ...row, reason: 'Add did not register — product not accepted by portal (composition likely did not load)' });
+        }
       }
     } catch (err) {
       await snapshot(page, frame, `row${row.srNo}-error`).catch(() => {});
@@ -203,7 +256,8 @@ async function processGroup(page, group, isLastGroup) {
     }
   }
 
-  console.log(`\nGroup "${group.manufacturer}" filled. Review the browser and click Submit.`);
+  const addedCount = await countProductRows(frame);
+  console.log(`\nGroup "${group.manufacturer}": ${addedCount} of ${group.rows.length} products added to the form. Review the browser and click Submit.`);
   console.log(`[WAITING_FOR_SUBMIT:${group.manufacturer}]`);
 
   if (!isLastGroup) {

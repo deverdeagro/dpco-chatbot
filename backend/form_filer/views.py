@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import threading
 
@@ -22,6 +23,14 @@ def _run_job(job_id: int, excel_path: str) -> None:
     job = FormFiveJob.objects.get(id=job_id)
 
     try:
+        # Pass the same local LLM config the chatbot uses, so the filer can ask
+        # it to disambiguate ambiguous product dropdown options.
+        child_env = {
+            **os.environ,
+            'OLLAMA_BASE_URL': getattr(settings, 'OLLAMA_BASE_URL', 'http://localhost:11434/v1'),
+            'OLLAMA_MODEL': getattr(settings, 'OLLAMA_MODEL', 'llama3.2'),
+        }
+
         proc = subprocess.Popen(
             ['node', str(settings.FORM_FILER_SCRIPT), excel_path],
             stdout=subprocess.PIPE,
@@ -29,6 +38,7 @@ def _run_job(job_id: int, excel_path: str) -> None:
             stdin=subprocess.PIPE,
             text=True,
             bufsize=1,
+            env=child_env,
         )
         _processes[job_id] = proc
 
