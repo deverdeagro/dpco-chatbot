@@ -63,17 +63,24 @@ The **classify node**: takes a normalized composition, matches it against the
 NLEM reference (`drugs.models.NLEMEntry`, 449 rows / 2022), and returns
 `{classification, reason}`.
 
-**Rules implemented**
-- exact match (ingredient(s) + strength + dosage form found in one NLEM listing)
-  → **scheduled**
-- nothing in NLEM → **new drug**
-- molecule in NLEM but strength / dosage form differs → **new drug**
-- only some components of a combination are in NLEM → **new drug**
+**Decision tree (3-way; reproduces the human/KMCO labels)**
+- exact NLEM listing (single or combo, strength + form match) → **scheduled**
+- touches NLEM *partially* — molecule in NLEM but off strength/form, OR a
+  combination where only some ingredients are in NLEM → **new drug**
+- touches NLEM *nowhere* (no ingredient listed) → **non scheduled**
+
+The partial-overlap heuristic IS the non-scheduled vs new-drug discriminator, so
+no second reference is needed for these three buckets. (Originally "nothing in
+NLEM → new drug"; corrected to → non scheduled after checking KMCO labels.)
+Full tree is the docstring of `drugs/classify.py`.
 
 Deterministic (no LLM): each decision carries an exact, auditable reason and
 cites the matching NLEM `sl_no`. Handles single molecules, NLEM's 24 FDC
 listings (`X (A) + Y (B)` notation), salt-stripping for name matching, and
 dosage-form / strength normalization.
+
+Validated 7/7 against known KMCO labels (Acerab SR, Empagliflozin combos,
+Amlodipine on/off-strength, Amoxicillin+Clavulanic).
 
 **Files**
 - `backend/drugs/classify.py` — `build_nlem_index()` (build once) and
@@ -89,23 +96,54 @@ python manage.py classify_products ~/Desktop/DPCO/Form-5-SampleFilings.xlsx --sh
 # --limit N | --out <path>   default out: <name>-classified.xlsx
 ```
 
-**Verified** on a 10-row MRP Rev slice → 1 scheduled (Baclofen 20 mg → NLEM
-[1.4.2]), 9 new drug, each with a specific reason.
+**Verified** on a 10-row MRP Rev slice and 7/7 labeled KMCO cases.
 
 **Known limits / open items**
-- Emits only `scheduled` / `new drug` — never `non scheduled` (by the rules
-  above). Splitting non-scheduled from new drug is Step 3 (needs a 2nd reference).
 - Name-variant gaps: a molecule NLEM lists under a different name/salt than the
   sheet can read as "not in NLEM" (e.g. `Valproic Acid` vs NLEM's valproate
-  entry). Candidate for an LLM-assisted name reconciliation later.
+  entry) → would wrongly fall to "non scheduled". Candidate for LLM-assisted
+  name reconciliation.
 - Ceiling price is not yet attached to scheduled rows (next obvious add).
+- Combo "scheduled" match verifies the molecule set, not yet the per-component
+  strengths in NLEM's `(A) + (B)` notation.
 
-## Step 3 — Non-Scheduled vs potential New Drug  ⬜ TODO
+## Step 2.5 — Column-mapping node (any sheet format)  ✅ DONE
 
-For non-NLEM products, distinguish established formulations (**Non-Scheduled**)
-from genuinely new FDCs/strengths (**New Drug**). Needs a second reference
-(approved-drugs master / CDSCO list / prior-year catalog); without it, everything
-non-NLEM collapses into one "needs human review" bucket.
+Makes intake format-agnostic. Instead of hardcoded header names, the LLM is
+shown the top of the sheet and returns which columns hold the composition /
+brand / dosage form, plus the header row.
+
+    sheet -> map_columns (LLM) -> normalize (LLM) -> classify (rules) -> write
+
+**Files**
+- `backend/drugs/sheet_mapper.py` — `map_columns(ws)` returns
+  `{"header_row", "columns": {"composition", "brand", "dosage_form"}}`
+  (composition required; brand/dosage_form nullable). 0-based column indices.
+- `classify_products.py` now calls `map_columns` instead of fixed header lists.
+
+**Verified** it auto-detects all three tabs of the sample file despite different
+layouts: MRP Rev (header row 1, comp col 2), New Products (header row 2 after a
+blank banner row, comp col 3), Mfg Details (comp col 10). End-to-end classify
+runs unchanged on both MRP Rev and New Products.
+
+**Known limits**
+- Maps composition to a single column. A sheet that splits molecule/strength
+  across multiple columns, or one ingredient per row, is not yet handled.
+
+## Step 3 — Non-Scheduled vs New Drug  ✅ DONE (via partial-overlap heuristic)
+
+Resolved inside the Step 2 decision tree: partial NLEM overlap → new drug, zero
+overlap → non scheduled. Matches KMCO labels without a second reference. A future
+refinement could still add a CDSCO/prior-catalogue cross-check to catch genuinely
+new molecules that happen to have zero NLEM overlap.
+
+## Next candidates  ⬜
+
+- **Accuracy harness**: run a labeled sheet (e.g. `Classification Boots.xlsx`,
+  which has a `Classification by KMCO` column) and report ours-vs-human agreement
+  + a list of disagreements.
+- Attach ceiling price to scheduled rows (flag MRP > ceiling).
+- LLM-assisted name reconciliation for NLEM name/salt variants.
 
 ## Later  ⬜
 

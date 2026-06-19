@@ -5,16 +5,30 @@ Input  : a normalized composition (output of drugs.normalize.normalize_compositi
 Against : the NLEM reference data (drugs.models.NLEMEntry)
 Output  : {"classification": "scheduled" | "new drug", "reason": str}
 
-Decision rules (as specified):
-  - exact match (every ingredient + its strength + the dosage form is found in a
-    single NLEM listing)                                  -> "scheduled"
-  - nothing in the composition is found in NLEM           -> "new drug"
-  - molecule(s) found in NLEM but strength / dosage form differ -> "new drug"
-  - only some ingredients of a combination are in NLEM    -> "new drug"
+Decision tree:
 
-Note: these rules never emit "non scheduled". Distinguishing non-scheduled from
-new drug needs a second reference (approved-drugs / prior catalogue) and is a
-later step. See plan.md.
+  normalized composition (ingredients + dosage_form)
+  |
+  |-- no ingredients parsed --------------------------------> "new drug" (unparsable; edge case)
+  |
+  |-- SINGLE ingredient
+  |     |-- molecule has a standalone NLEM listing?
+  |     |     |-- yes: strength AND form match an NLEM variant?
+  |     |     |          |-- yes -------------------------> "scheduled"
+  |     |     |          |-- no  -------------------------> "new drug"  (in NLEM, different strength/form)
+  |     |     |-- no:
+  |     |            |-- molecule appears only inside an NLEM combo --> "new drug"
+  |     |            |-- molecule not in NLEM at all --------------> "non scheduled"
+  |
+  |-- COMBINATION (2+ ingredients)
+        |-- whole set matches an NLEM combination listing -------> "scheduled"
+        |-- at least one ingredient in NLEM (not a full match) --> "new drug"  (partial overlap)
+        |-- no ingredient in NLEM ------------------------------> "non scheduled"
+
+Rationale: an exact NLEM listing is price-controlled (scheduled). Mixing a
+scheduled/essential molecule with extra molecules, or changing its strength/form,
+creates a "new drug" (the NPPA flag for stepping outside an essential listing).
+A formulation that touches NLEM nowhere is simply non-scheduled.
 
 This is deterministic on purpose: each decision carries an exact, auditable
 reason and costs no tokens. It is written as a pure node — build the NLEM index
@@ -150,10 +164,12 @@ def classify_composition(norm: dict, index: dict) -> dict:
         ing, key = ingredients[0], names[0]
         entries = index["single"].get(key)
         if not entries:
-            in_combo = key in index["members"]
-            extra = " (only appears inside an NLEM combination)" if in_combo else ""
-            return {"classification": "new drug",
-                    "reason": f"'{ing['name']}' is not listed in NLEM{extra}."}
+            if key in index["members"]:
+                return {"classification": "new drug",
+                        "reason": f"'{ing['name']}' is not listed in NLEM on its own, "
+                                  f"only as part of an NLEM combination."}
+            return {"classification": "non scheduled",
+                    "reason": f"'{ing['name']}' is not listed in NLEM."}
 
         want_str = normalize_strength(ing.get("strength"))
         for entry, variants in entries:
@@ -178,7 +194,7 @@ def classify_composition(norm: dict, index: dict) -> dict:
 
     matched = [ingredients[i]["name"] for i, k in enumerate(names) if k in index["members"]]
     if not matched:
-        return {"classification": "new drug",
+        return {"classification": "non scheduled",
                 "reason": "No ingredient of this combination is listed in NLEM."}
     return {"classification": "new drug",
             "reason": f"Combination is not an NLEM listing; only some components are in NLEM "

@@ -19,31 +19,9 @@ from openai import APIConnectionError
 
 from drugs.normalize import normalize_composition
 from drugs.classify import build_nlem_index, classify_composition
+from drugs.sheet_mapper import map_columns
 
-COMPOSITION_HEADERS = [
-    "Drug (Composition DCA)",
-    "Drug (Composition with Strength)",
-    "Composition with strength",
-    "Composition",
-]
-BRAND_HEADERS = ["Brand Name", "Product Name"]
-DOSAGE_HEADERS = ["Dosage (Product Type)", "Dosage Form"]
 NEW_COLUMNS = ["Normalized Composition", "Classification", "Reason"]
-
-
-def _find_header_row(ws):
-    for r, row in enumerate(ws.iter_rows(min_row=1, max_row=15, values_only=True), start=1):
-        labels = {str(v).strip(): i for i, v in enumerate(row) if v is not None}
-        if any(h in labels for h in COMPOSITION_HEADERS):
-            return r, labels
-    return None, {}
-
-
-def _pick(labels, candidates):
-    for c in candidates:
-        if c in labels:
-            return labels[c]
-    return None
 
 
 class Command(BaseCommand):
@@ -67,12 +45,21 @@ class Command(BaseCommand):
             raise CommandError(f"Sheet {opts['sheet']!r} not found. Available: {wb.sheetnames}")
         ws = wb[opts["sheet"]]
 
-        header_row, labels = _find_header_row(ws)
-        if header_row is None:
-            raise CommandError("Could not locate a composition column.")
-        comp_col = _pick(labels, COMPOSITION_HEADERS)
-        brand_col = _pick(labels, BRAND_HEADERS)
-        dosage_col = _pick(labels, DOSAGE_HEADERS)
+        # Let the LLM figure out which columns are which, for any layout.
+        self.stdout.write("Mapping sheet columns...")
+        try:
+            mapping = map_columns(ws)
+        except APIConnectionError:
+            raise CommandError(
+                "Cannot reach the LLM (Ollama). Start it with `ollama serve` "
+                f"and ensure model '{settings.OLLAMA_MODEL}' is pulled, then re-run."
+            )
+        header_row = mapping["header_row"]
+        comp_col = mapping["columns"]["composition"]
+        brand_col = mapping["columns"]["brand"]
+        dosage_col = mapping["columns"]["dosage_form"]
+        self.stdout.write(f"  header row {header_row}, composition col {comp_col}, "
+                          f"brand col {brand_col}, dosage col {dosage_col}")
 
         # Write the new column headers after the existing columns.
         first_new = ws.max_column + 1
