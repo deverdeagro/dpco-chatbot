@@ -57,11 +57,48 @@ the active base Y, excipient/colour boilerplate discarded.
 
 ---
 
-## Step 2 — Match against NLEM / ceiling prices → Scheduled vs not  ⬜ TODO
+## Step 2 — Classify against NLEM (Scheduled vs New Drug)  ✅ DONE
 
-Match the normalized key (molecule set + strength + dosage form) against the
-NLEM / `drugs_ceilingprice` data. Exact match → **Scheduled** (+ attach ceiling
-price, flag if MRP exceeds it). No match → goes to Step 3.
+The **classify node**: takes a normalized composition, matches it against the
+NLEM reference (`drugs.models.NLEMEntry`, 449 rows / 2022), and returns
+`{classification, reason}`.
+
+**Rules implemented**
+- exact match (ingredient(s) + strength + dosage form found in one NLEM listing)
+  → **scheduled**
+- nothing in NLEM → **new drug**
+- molecule in NLEM but strength / dosage form differs → **new drug**
+- only some components of a combination are in NLEM → **new drug**
+
+Deterministic (no LLM): each decision carries an exact, auditable reason and
+cites the matching NLEM `sl_no`. Handles single molecules, NLEM's 24 FDC
+listings (`X (A) + Y (B)` notation), salt-stripping for name matching, and
+dosage-form / strength normalization.
+
+**Files**
+- `backend/drugs/classify.py` — `build_nlem_index()` (build once) and
+  `classify_composition(norm, index) -> {classification, reason}`. Pure node.
+- `backend/drugs/management/commands/classify_products.py` — full pipeline over
+  a sheet: `composition → normalize (LLM) → classify (rules)`, then writes a
+  **copy** of the workbook with three new columns: `Normalized Composition`,
+  `Classification`, `Reason`. Original file is never modified.
+
+**How to run** (from `backend/`, Ollama running)
+```bash
+python manage.py classify_products ~/Desktop/DPCO/Form-5-SampleFilings.xlsx --sheet "MRP Rev"
+# --limit N | --out <path>   default out: <name>-classified.xlsx
+```
+
+**Verified** on a 10-row MRP Rev slice → 1 scheduled (Baclofen 20 mg → NLEM
+[1.4.2]), 9 new drug, each with a specific reason.
+
+**Known limits / open items**
+- Emits only `scheduled` / `new drug` — never `non scheduled` (by the rules
+  above). Splitting non-scheduled from new drug is Step 3 (needs a 2nd reference).
+- Name-variant gaps: a molecule NLEM lists under a different name/salt than the
+  sheet can read as "not in NLEM" (e.g. `Valproic Acid` vs NLEM's valproate
+  entry). Candidate for an LLM-assisted name reconciliation later.
+- Ceiling price is not yet attached to scheduled rows (next obvious add).
 
 ## Step 3 — Non-Scheduled vs potential New Drug  ⬜ TODO
 
