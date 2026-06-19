@@ -36,9 +36,18 @@ once, then call classify_composition() per row — so it drops cleanly into a
 graph later.
 """
 
+import difflib
 import re
 
 from drugs.models import NLEMEntry
+
+# When an exact molecule name is not in NLEM, accept the closest NLEM name above
+# this similarity (catches spelling variants: amoxycillin->amoxicillin,
+# cetrizine->cetirizine). Kept high to avoid matching genuinely different drugs.
+FUZZY_CUTOFF = 0.87
+
+# Dosage forms KMCO treats as interchangeable for scheduling (solid oral).
+_SOLID_ORAL = {"tablet", "capsule"}
 
 # Salt / form words stripped when comparing a molecule name to NLEM's base name.
 _SALT_WORDS = {
@@ -56,6 +65,7 @@ _FORM_SYNONYMS = [
     ("injection", "injection"), ("inj", "injection"), ("vial", "injection"),
     ("oral liquid", "oral liquid"), ("syrup", "oral liquid"),
     ("suspension", "oral liquid"), ("solution", "oral liquid"),
+    ("liquid", "oral liquid"),
     ("cream", "cream"), ("ointment", "ointment"), ("gel", "gel"),
     ("lotion", "lotion"), ("drops", "drops"), ("powder", "powder"),
 ]
@@ -63,6 +73,21 @@ _FORM_SYNONYMS = [
 _STRENGTH_RE = re.compile(
     r"(\d+(?:\.\d+)?)\s*(mcg|mg|g|iu|ml|%|units?)", re.IGNORECASE
 )
+
+# Bare numeric values, used to compare combination strengths against NLEM's
+# messy "(A) + (B)" notation without trying to parse it positionally.
+_NUM_RE = re.compile(r"\d+(?:\.\d+)?")
+
+
+def _numbers(text: str | None) -> set:
+    return {float(x) for x in _NUM_RE.findall(text or "")}
+
+
+def forms_compatible(a, b) -> bool:
+    """Equal forms, either side unknown, or both solid-oral (tablet/capsule)."""
+    if a is None or b is None or a == b:
+        return True
+    return a in _SOLID_ORAL and b in _SOLID_ORAL
 
 
 def normalize_name(name: str) -> str:
@@ -136,7 +161,8 @@ def build_nlem_index(version: str = "2022") -> dict:
             single.setdefault(parts[0], []).append((entry, variants))
         else:
             combo[frozenset(parts)] = (entry, variants)
-    return {"single": single, "combo": combo, "members": members}
+    return {"single": single, "combo": combo, "members": members,
+            "members_list": sorted(members)}
 
 
 def _fmt(name, strength, form):
@@ -148,6 +174,21 @@ def _fmt(name, strength, form):
     return " ".join(bits)
 
 
+def _resolve(name_key: str, index: dict):
+    """
+    Map a (normalized) molecule name to its canonical NLEM name.
+    Returns (canonical_name, was_fuzzy). Falls back to the input when no close
+    NLEM name exists.
+    """
+    if name_key in index["members"]:
+        return name_key, False
+    close = difflib.get_close_matches(
+        name_key, index["members_list"], n=1, cutoff=FUZZY_CUTOFF)
+    if close:
+        return close[0], True
+    return name_key, False
+
+
 def classify_composition(norm: dict, index: dict) -> dict:
     """Apply the rules. `norm` is the normalize_composition() output."""
     ingredients = norm.get("ingredients") or []
@@ -157,11 +198,17 @@ def classify_composition(norm: dict, index: dict) -> dict:
     if not ingredients:
         return {"classification": "new drug", "reason": "No ingredients could be parsed from the composition."}
 
-    names = [normalize_name(i["name"]) for i in ingredients]
+    # Resolve each name to its canonical NLEM spelling (fuzzy if needed).
+    resolved = [_resolve(normalize_name(i["name"]), index) for i in ingredients]
+    keys = [r[0] for r in resolved]
+
+    def spell_note(i):
+        rkey, fuzzy = resolved[i]
+        return f" (read as NLEM '{rkey.title()}')" if fuzzy else ""
 
     # --- single-ingredient formulation ---
     if len(ingredients) == 1:
-        ing, key = ingredients[0], names[0]
+        ing, key = ingredients[0], keys[0]
         entries = index["single"].get(key)
         if not entries:
             if key in index["members"]:
@@ -174,25 +221,34 @@ def classify_composition(norm: dict, index: dict) -> dict:
         want_str = normalize_strength(ing.get("strength"))
         for entry, variants in entries:
             for vform, vstr in variants:
-                if vstr == want_str and (vform == form or form is None or vform is None):
+                if vstr == want_str and forms_compatible(vform, form):
                     return {"classification": "scheduled",
                             "reason": f"Exact NLEM match: {_fmt(ing['name'], ing.get('strength'), raw_form)} "
-                                      f"= NLEM [{entry.sl_no}] {entry.medicine}."}
+                                      f"= NLEM [{entry.sl_no}] {entry.medicine}{spell_note(0)}."}
         avail = sorted({f"{f or '?'} {s or '?'}" for _, vs in entries for f, s in vs})
         return {"classification": "new drug",
-                "reason": f"'{ing['name']}' is in NLEM [{entries[0][0].sl_no}] but the "
+                "reason": f"'{ing['name']}' is in NLEM [{entries[0][0].sl_no}]{spell_note(0)} but the "
                           f"strength/dosage form ({ing.get('strength')}, {raw_form}) is not among "
                           f"NLEM's variants ({', '.join(avail) or 'none listed'})."}
 
     # --- combination (FDC) formulation ---
-    nameset = frozenset(names)
-    combo = index["combo"].get(nameset)
+    combo = index["combo"].get(frozenset(keys))
     if combo is not None:
-        entry, _ = combo
-        return {"classification": "scheduled",
-                "reason": f"Combination matches NLEM listing [{entry.sl_no}] {entry.medicine}."}
+        entry, variants = combo
+        prod_nums = set().union(*[_numbers(i.get("strength")) for i in ingredients])
+        entry_nums = _numbers(entry.dosage_form_and_strength)
+        entry_forms = {f for f, _ in variants}
+        strengths_ok = bool(prod_nums) and prod_nums <= entry_nums
+        form_ok = form is None or any(forms_compatible(form, f) for f in entry_forms)
+        if strengths_ok and form_ok:
+            return {"classification": "scheduled",
+                    "reason": f"Combination matches NLEM listing [{entry.sl_no}] {entry.medicine}."}
+        return {"classification": "new drug",
+                "reason": f"Combination is the NLEM listing [{entry.sl_no}] {entry.medicine}, but the "
+                          f"strengths/dosage form differ (product strengths "
+                          f"{sorted(prod_nums) or '—'} vs NLEM {sorted(entry_nums)})."}
 
-    matched = [ingredients[i]["name"] for i, k in enumerate(names) if k in index["members"]]
+    matched = [ingredients[i]["name"] for i, k in enumerate(keys) if k in index["members"]]
     if not matched:
         return {"classification": "non scheduled",
                 "reason": "No ingredient of this combination is listed in NLEM."}

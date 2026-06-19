@@ -98,14 +98,24 @@ python manage.py classify_products ~/Desktop/DPCO/Form-5-SampleFilings.xlsx --sh
 
 **Verified** on a 10-row MRP Rev slice and 7/7 labeled KMCO cases.
 
+**Refinements added (validated 11/11 incl. regressions)**
+- Fuzzy name matching (difflib, cutoff 0.87) for spelling variants:
+  `amoxycillin→amoxicillin`, `cetrizine→cetirizine`. Reason notes when a fuzzy
+  match was used. Guarded against false hits (`aceclofenac` ≠ `diclofenac`).
+- Solid-oral form equivalence: tablet ≈ capsule (KMCO treats Amoxicillin 250 DT
+  as scheduled vs NLEM's capsule). `liquid → oral liquid` synonym (fixes
+  Azithromycin / Cetirizine syrups).
+- Combination "scheduled" now verifies component strengths (numeric-subset vs
+  NLEM's `(A)+(B)` notation): Amoxicillin+Clavulanic 250+62.5 → new drug,
+  500+125 → scheduled.
+
 **Known limits / open items**
-- Name-variant gaps: a molecule NLEM lists under a different name/salt than the
-  sheet can read as "not in NLEM" (e.g. `Valproic Acid` vs NLEM's valproate
-  entry) → would wrongly fall to "non scheduled". Candidate for LLM-assisted
-  name reconciliation.
+- Fuzzy matching is a heuristic; cutoff 0.87 — audit the spelling-note reasons.
+- Combo strength check is numeric-subset, not positional pairing (a cross-paired
+  strength set could over-match in rare cases).
 - Ceiling price is not yet attached to scheduled rows (next obvious add).
-- Combo "scheduled" match verifies the molecule set, not yet the per-component
-  strengths in NLEM's `(A) + (B)` notation.
+- Name reconciliation still misses true synonyms that aren't spelling-close
+  (e.g. `Valproic Acid` vs a `Sodium valproate` listing). LLM-assisted candidate.
 
 ## Step 2.5 — Column-mapping node (any sheet format)  ✅ DONE
 
