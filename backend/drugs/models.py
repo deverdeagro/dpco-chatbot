@@ -23,3 +23,39 @@ class CeilingPrice(models.Model):
 
     def __str__(self):
         return f"{self.medicine_name} ({self.dosage_form_and_strength}) — {self.ceiling_price} w.e.f {self.effective_from}"
+
+
+class NLEMEntry(models.Model):
+    """
+    A single listing from the National List of Essential Medicines (NLEM).
+
+    Each row is one (section, medicine) listing as printed in the NLEM PDF.
+    The same medicine can appear under several therapeutic categories
+    (cross-listed), so `sl_no` — the document's hierarchical number
+    (e.g. "1.1.1", "27.4") — is the natural key within a version.
+    """
+    nlem_version = models.CharField(max_length=10, default="2022")
+    sl_no = models.CharField(max_length=20)
+    medicine = models.CharField(max_length=500)
+    category = models.CharField(max_length=300, blank=True)
+    dosage_form_and_strength = models.TextField(blank=True)
+    level_of_healthcare = models.CharField(max_length=20, blank=True)
+
+    class Meta:
+        verbose_name = "NLEM entry"
+        verbose_name_plural = "NLEM entries"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["nlem_version", "sl_no"],
+                name="unique_nlem_version_slno",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["medicine"]),
+            models.Index(fields=["category"]),
+            models.Index(fields=["nlem_version"]),
+        ]
+        ordering = ["nlem_version", "sl_no"]
+
+    def __str__(self):
+        return f"[{self.sl_no}] {self.medicine} — {self.category}"
