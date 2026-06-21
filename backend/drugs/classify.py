@@ -111,15 +111,63 @@ def normalize_form(form: str | None) -> str | None:
     return s.strip()
 
 
+# Concentration / percent / bare-number strength forms.
+_CONC_VOL_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*mg\s*(?:/|per)\s*(\d+(?:\.\d+)?)\s*ml", re.IGNORECASE)
+_CONC_PER_ML_RE = re.compile(r"(\d+(?:\.\d+)?)\s*mg\s*/\s*ml", re.IGNORECASE)
+_PCT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+_BARE_NUM_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*$")
+
+
 def normalize_strength(strength: str | None) -> str | None:
-    """'10 mg' / '10mg' -> '10mg'. Returns None if no number+unit present."""
+    """
+    Canonicalize a strength for comparison:
+      '10 mg' -> '10mg'
+      '200 mg/5 mL' -> '40mg/ml'   (concentration: amount / volume)
+      '4 mg/ml'     -> '4mg/ml'
+      '0.1 %'       -> '0.1%'
+      '100'         -> '100' (unit-less; matched numerically against NLEM)
+    Returns None when nothing numeric is present.
+    """
     if not strength:
         return None
+    m = _CONC_VOL_RE.search(strength)
+    if m:
+        return f"{float(m.group(1)) / float(m.group(2)):g}mg/ml"
+    m = _CONC_PER_ML_RE.search(strength)
+    if m:
+        return f"{float(m.group(1)):g}mg/ml"
+    m = _PCT_RE.search(strength)
+    if m:
+        return f"{float(m.group(1)):g}%"
     m = _STRENGTH_RE.search(strength)
-    if not m:
-        return None
-    unit = m.group(2).lower().rstrip("s")  # unit/units -> unit
-    return f"{float(m.group(1)):g}{unit}"
+    if m:
+        unit = m.group(2).lower().rstrip("s")  # unit/units -> unit
+        return f"{float(m.group(1)):g}{unit}"
+    m = _BARE_NUM_RE.match(strength)
+    if m:
+        return f"{float(m.group(1)):g}"
+    return None
+
+
+def strengths_match(product: str | None, nlem: str | None) -> bool:
+    """
+    Equal canonical strengths, a unit-less product number matching NLEM's
+    numeric value ('Capsule 100' vs '100 mg'), or a flat mg dose matching an
+    NLEM concentration of the same number (a 500 mg vial vs NLEM '500 mg/mL').
+    """
+    if product is None or nlem is None:
+        return False
+    if product == nlem:
+        return True
+    if _BARE_NUM_RE.match(product):
+        pn, nn = _numbers(product), _numbers(nlem)
+        return bool(pn) and pn == nn
+    pm = re.fullmatch(r"(\d+(?:\.\d+)?)mg", product)
+    nm = re.fullmatch(r"(\d+(?:\.\d+)?)mg/ml", nlem)
+    if pm and nm and float(pm.group(1)) == float(nm.group(1)):
+        return True
+    return False
 
 
 def _parse_variants(dosage_field: str):
@@ -130,7 +178,8 @@ def _parse_variants(dosage_field: str):
         if not line:
             continue
         m = _STRENGTH_RE.search(line)
-        strength = normalize_strength(m.group(0)) if m else None
+        # Pass the whole strength portion (incl. '/mL', '%') for canonicalization.
+        strength = normalize_strength(line[m.start():]) if m else None
         form_text = line[: m.start()] if m else line
         variants.add((normalize_form(form_text), strength))
     return variants
@@ -238,7 +287,7 @@ def classify_composition(norm: dict, index: dict, resolver=None) -> dict:
         want_str = normalize_strength(ing.get("strength"))
         for entry, variants in entries:
             for vform, vstr in variants:
-                if vstr == want_str and forms_compatible(vform, form):
+                if strengths_match(want_str, vstr) and forms_compatible(vform, form):
                     return {"classification": "scheduled",
                             "reason": f"Exact NLEM match: {_fmt(ing['name'], ing.get('strength'), raw_form)} "
                                       f"= NLEM [{entry.sl_no}] {entry.medicine}{spell_note(0)}."}

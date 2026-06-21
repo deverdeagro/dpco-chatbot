@@ -180,6 +180,18 @@ resolver fixed exactly the name-miss class it targets — Clopisil-AP, Shinecal,
 Tramocid, Trijet, Coldspan now correct. Remaining 16 are other categories
 (concentration, Esomeprazole, partial-overlap domain ceiling), not name misses.
 
+**+ concentration/strength bucket → 93.4% (183/196, 13 wrong).** `classify`
+canonicalizes concentration→mg/mL / percent / bare numbers (`strengths_match`,
+flat-mg↔concentration); normalizer preserves concentrations + never drops a
+named ingredient. Fixed: Dexasil, Gentaband, OROLET, NOSTROSIL, ITROSIL.
+Net +3 (two flipped: Amoxon = LLM jitter; Gentablue = domain — 10mg/mL is in
+NLEM but KMCO calls it PND).
+
+Remaining 13: Esomeprazole fuzzy false-match (1, fix = 2-char prefix guard);
+Amoxon jitter (1); over-match needing release-form/injection-only logic
+(Gentablue, Metololol ER ×2, Pantolet); partial-overlap **domain ceiling**
+(Pregaday, Zeptokof ×3, Losocut-H, Montospan ×2 — needs a 2nd reference).
+
 **Hardening applied (first run hung 7h on a leaked/stuck call):**
 - Shared LLM client — `drugs/llm_client.py` `get_client()` (lru_cached singleton
   + 60s timeout). normalize/sheet_mapper/resolver all use it. Fixes the httpx
