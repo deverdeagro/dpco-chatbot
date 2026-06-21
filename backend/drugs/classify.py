@@ -174,23 +174,36 @@ def _fmt(name, strength, form):
     return " ".join(bits)
 
 
-def _resolve(name_key: str, index: dict):
+def _resolve(raw_name: str, index: dict, resolver=None):
     """
-    Map a (normalized) molecule name to its canonical NLEM name.
-    Returns (canonical_name, was_fuzzy). Falls back to the input when no close
-    NLEM name exists.
+    Map a raw ingredient name to its canonical NLEM name.
+    Returns (canonical_name, method) where method is one of
+    "exact" | "fuzzy" | "lookup" | "none".
+
+    Deterministic exact/fuzzy first; on a miss, the optional `resolver`
+    (an LLM tool-grounded callable) is consulted. Its answer is only accepted
+    when it is a real NLEM member.
     """
-    if name_key in index["members"]:
-        return name_key, False
+    key = normalize_name(raw_name)
+    if key in index["members"]:
+        return key, "exact"
     close = difflib.get_close_matches(
-        name_key, index["members_list"], n=1, cutoff=FUZZY_CUTOFF)
+        key, index["members_list"], n=1, cutoff=FUZZY_CUTOFF)
     if close:
-        return close[0], True
-    return name_key, False
+        return close[0], "fuzzy"
+    if resolver is not None:
+        r = resolver(raw_name)
+        if r and r in index["members"]:
+            return r, "lookup"
+    return key, "none"
 
 
-def classify_composition(norm: dict, index: dict) -> dict:
-    """Apply the rules. `norm` is the normalize_composition() output."""
+def classify_composition(norm: dict, index: dict, resolver=None) -> dict:
+    """Apply the rules. `norm` is the normalize_composition() output.
+
+    `resolver`, if given, is an LLM name-resolver used only when deterministic
+    matching misses (see drugs.resolver.make_resolver).
+    """
     ingredients = norm.get("ingredients") or []
     raw_form = norm.get("dosage_form")
     form = normalize_form(raw_form)
@@ -198,13 +211,17 @@ def classify_composition(norm: dict, index: dict) -> dict:
     if not ingredients:
         return {"classification": "new drug", "reason": "No ingredients could be parsed from the composition."}
 
-    # Resolve each name to its canonical NLEM spelling (fuzzy if needed).
-    resolved = [_resolve(normalize_name(i["name"]), index) for i in ingredients]
+    # Resolve each name to its canonical NLEM spelling (fuzzy/lookup if needed).
+    resolved = [_resolve(i["name"], index, resolver) for i in ingredients]
     keys = [r[0] for r in resolved]
 
     def spell_note(i):
-        rkey, fuzzy = resolved[i]
-        return f" (read as NLEM '{rkey.title()}')" if fuzzy else ""
+        rkey, method = resolved[i]
+        if method == "fuzzy":
+            return f" (read as NLEM '{rkey.title()}')"
+        if method == "lookup":
+            return f" (resolved to NLEM '{rkey.title()}')"
+        return ""
 
     # --- single-ingredient formulation ---
     if len(ingredients) == 1:

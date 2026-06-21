@@ -21,7 +21,8 @@ prices and the scheduled / non-scheduled / new-drug decision are later steps.
 import json
 
 from django.conf import settings
-from openai import OpenAI
+
+from drugs.llm_client import get_client
 
 NORMALIZE_SYSTEM_PROMPT = """You normalize Indian pharmaceutical product compositions into structured JSON.
 
@@ -97,13 +98,6 @@ _FEWSHOT = [
 ]
 
 
-def _get_client() -> OpenAI:
-    return OpenAI(
-        base_url=getattr(settings, 'OLLAMA_BASE_URL', 'http://localhost:11434/v1'),
-        api_key="ollama",
-    )
-
-
 def _strip_fences(text: str) -> str:
     text = text.strip()
     if text.startswith("```"):
@@ -124,7 +118,7 @@ def normalize_composition(composition: str) -> dict:
     if not composition:
         return {"ingredients": [], "dosage_form": None}
 
-    client = _get_client()
+    client = get_client()
     response = client.chat.completions.create(
         model=settings.OLLAMA_MODEL,
         messages=(

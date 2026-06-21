@@ -24,7 +24,8 @@ Output:
 import json
 
 from django.conf import settings
-from openai import OpenAI
+
+from drugs.llm_client import get_client
 
 MAP_SYSTEM_PROMPT = """You identify columns in a pharmaceutical product spreadsheet.
 
@@ -41,13 +42,6 @@ Rules:
 - Use 0-based indices for columns, 1-based for header_row.
 - composition must never be null; if unsure, choose the column whose values contain ingredient names and strengths.
 - Schema: {"header_row": int, "columns": {"composition": int, "brand": int|null, "dosage_form": int|null}}"""
-
-
-def _get_client() -> OpenAI:
-    return OpenAI(
-        base_url=getattr(settings, 'OLLAMA_BASE_URL', 'http://localhost:11434/v1'),
-        api_key="ollama",
-    )
 
 
 def _grid_preview(ws, max_rows=12, max_cols=40, cell_len=55) -> str:
@@ -72,7 +66,7 @@ def map_columns(ws) -> dict:
     if not preview:
         raise ValueError("Sheet appears to be empty.")
 
-    client = _get_client()
+    client = get_client()
     response = client.chat.completions.create(
         model=settings.OLLAMA_MODEL,
         messages=[

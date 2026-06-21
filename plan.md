@@ -147,13 +147,55 @@ overlap → non scheduled. Matches KMCO labels without a second reference. A fut
 refinement could still add a CDSCO/prior-catalogue cross-check to catch genuinely
 new molecules that happen to have zero NLEM overlap.
 
+## Step 4 — Agentic name resolver (tool-grounded LLM)  🚧 IN PROGRESS
+
+The first genuinely agentic piece: an LLM with a tool, used as the **on-miss
+fallback** for molecule-name matching. Deterministic exact/fuzzy still runs
+first; only when it misses does the LLM get involved.
+Handles what string rules cannot (needs knowledge, not similarity):
+- salts not in our list: `Clopidogrel Bisulphate` → `clopidogrel`
+- synonyms / brand actives: `Aspirin` → `acetylsalicylic acid`
+- abbreviations: `Para` → `paracetamol`
+
+**File** `backend/drugs/resolver.py` — `make_resolver(index)` returns
+`resolve(raw_name) -> canonical_member | None`. The LLM (qwen2.5:14b, tool-calling
+via Ollama) has one tool, `search_nlem(query)`, over the real 449 NLEM molecules.
+
+**Guardrail (anti-hallucination):** the answer is accepted only if it is a real
+NLEM member (re-checked against the index), so the model can *suggest* but never
+*invent* a scheduled match. Verified: `Empagliflozin`, `CPM` (Chlorpheniramine
+not in NLEM), random text → `None`.
+
+**Wiring:** `classify._resolve(raw_name, index, resolver=None)` →
+exact → fuzzy → resolver (lookup) → none; `classify_composition(.., resolver=)`;
+`classify_products` builds it once and passes it. `resolver=None` keeps the
+deterministic path (and all unit tests) intact.
+
+**Cost:** ~6.8s/row (was ~1s) — the resolver fires on every miss and runs a
+multi-step tool loop. Results cached per run. Verified end-to-end: Clopisil-AP
+(Clopidogrel Bisulphate + Aspirin) `non scheduled` → `new drug` (matches KMCO).
+
+**Accuracy on `Test 2.xlsx`: 91.8% (180/196), up from 90.8% baseline.** The
+resolver fixed exactly the name-miss class it targets — Clopisil-AP, Shinecal,
+Tramocid, Trijet, Coldspan now correct. Remaining 16 are other categories
+(concentration, Esomeprazole, partial-overlap domain ceiling), not name misses.
+
+**Hardening applied (first run hung 7h on a leaked/stuck call):**
+- Shared LLM client — `drugs/llm_client.py` `get_client()` (lru_cached singleton
+  + 60s timeout). normalize/sheet_mapper/resolver all use it. Fixes the httpx
+  connection leak (was opening a new client per call → 12+ stuck sockets).
+- 60s per-call timeout → a stuck request fails instead of hanging forever;
+  `classify_products` reports it cleanly.
+- Persistent resolver cache — `drugs/.resolver_cache.json` (gitignored). Resolved
+  names (and misses) survive across runs: cached lookup 6.3s → 0.000s. Delete the
+  file to reset.
+
 ## Next candidates  ⬜
 
-- **Accuracy harness**: run a labeled sheet (e.g. `Classification Boots.xlsx`,
-  which has a `Classification by KMCO` column) and report ours-vs-human agreement
-  + a list of disagreements.
+- Persist/cache resolver results across runs (kills latency + the LLM jitter).
 - Attach ceiling price to scheduled rows (flag MRP > ceiling).
-- LLM-assisted name reconciliation for NLEM name/salt variants.
+- Remaining error classes: concentration handling, over-match (Metoprolol ER),
+  partial-overlap domain ceiling (Losartan+HCTZ).
 
 ## Later  ⬜
 
