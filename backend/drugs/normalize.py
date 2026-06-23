@@ -21,7 +21,8 @@ prices and the scheduled / non-scheduled / new-drug decision are later steps.
 import json
 
 from django.conf import settings
-from openai import OpenAI
+
+from drugs.llm_client import get_client
 
 NORMALIZE_SYSTEM_PROMPT = """You normalize Indian pharmaceutical product compositions into structured JSON.
 
@@ -37,12 +38,18 @@ Extract:
        * For "X eq. to Y <strength>" (e.g. "Divalproex Sodium IP eq. to Valproic Acid 250 mg", "Rosuvastatin Calcium IP Eq to Rosuvastatin 40mg"), use the EQUIVALENT base Y as the name (e.g. "Valproic Acid", "Rosuvastatin") and <strength> as its strength.
        * Otherwise keep the salt form if present (e.g. "Metformin Hydrochloride").
        * Always remove pharmacopoeia tags (IP, BP, USP, USP-NF) and release modifiers (ER), (SR), (XR).
-   - strength: ONLY the amount, normalized as "<number> <unit>" with a single space (e.g. "10 mg", "0.03 mg", "2 g"). Never put words like "eq. to" in this field. If no strength is stated, use null.
+   - strength: ONLY the amount. Rules:
+       * solid forms: "<number> <unit>" with one space (e.g. "10 mg", "0.03 mg", "2 g").
+       * liquids / injections: keep the concentration EXACTLY as written, including the volume — do not drop it. "200 mg/5 ml" stays "200 mg/5 ml"; "20 mg/ml" stays "20 mg/ml"; "Each 2 ml contains 4 mg" becomes "4 mg/2 ml".
+       * percentages stay as written: "0.1 %", "2 %".
+       * if a strength number is present but no unit is given, output the bare number (e.g. "100").
+       * never put words like "eq. to" in this field. If no strength is stated at all, use null.
 2. dosage_form: the singular lowercase dosage form (e.g. "tablet", "capsule", "injection", "vial", "syrup"). Infer it from words like Tabs/Tablets/Inj/Vial. If it cannot be determined, use null.
 
 Rules:
 - Output ONLY a JSON object. No markdown fences, no commentary.
 - Preserve the order ingredients appear in the source.
+- ALWAYS include every active ingredient that is named, even when it has no stated strength (set its strength to null). Never return an empty ingredients list when an ingredient is named (e.g. "Ranitidine Injection" -> one ingredient "Ranitidine" with null strength).
 - Never emit an ingredient with an empty name.
 - Do NOT invent ingredients or strengths that are not present.
 - Schema: {"ingredients": [{"name": string, "strength": string|null}], "dosage_form": string|null}"""
@@ -94,14 +101,20 @@ _FEWSHOT = [
             "dosage_form": "tablet",
         }),
     },
+    {
+        "role": "user",
+        "content": "Dexamethasone Inj (Each 2ml contains 4mg)",
+    },
+    {
+        "role": "assistant",
+        "content": json.dumps({
+            "ingredients": [
+                {"name": "Dexamethasone", "strength": "4 mg/2 ml"},
+            ],
+            "dosage_form": "injection",
+        }),
+    },
 ]
-
-
-def _get_client() -> OpenAI:
-    return OpenAI(
-        base_url=getattr(settings, 'OLLAMA_BASE_URL', 'http://localhost:11434/v1'),
-        api_key="ollama",
-    )
 
 
 def _strip_fences(text: str) -> str:
@@ -124,7 +137,7 @@ def normalize_composition(composition: str) -> dict:
     if not composition:
         return {"ingredients": [], "dosage_form": None}
 
-    client = _get_client()
+    client = get_client()
     response = client.chat.completions.create(
         model=settings.OLLAMA_MODEL,
         messages=(

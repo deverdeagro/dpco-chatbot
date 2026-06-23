@@ -15,10 +15,11 @@ from pathlib import Path
 import openpyxl
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-from openai import APIConnectionError
+from openai import APIConnectionError, APITimeoutError
 
 from drugs.normalize import normalize_composition
 from drugs.classify import build_nlem_index, classify_composition
+from drugs.resolver import make_resolver
 from drugs.sheet_mapper import map_columns
 
 NEW_COLUMNS = ["Normalized Composition", "Classification", "Reason"]
@@ -68,6 +69,7 @@ class Command(BaseCommand):
 
         self.stdout.write("Building NLEM index...")
         index = build_nlem_index()
+        resolver = make_resolver(index)  # LLM fallback for names rules can't match
 
         counts, processed = {}, 0
         for r, row in enumerate(ws.iter_rows(min_row=header_row + 1, values_only=True),
@@ -78,16 +80,17 @@ class Command(BaseCommand):
 
             try:
                 norm = normalize_composition(str(composition))
-            except APIConnectionError:
+            except (APIConnectionError, APITimeoutError):
                 raise CommandError(
-                    "Cannot reach the LLM (Ollama). Start it with `ollama serve` "
-                    f"and ensure model '{settings.OLLAMA_MODEL}' is pulled, then re-run."
+                    "Cannot reach the LLM (Ollama) or it timed out. Start it with "
+                    f"`ollama serve` and ensure model '{settings.OLLAMA_MODEL}' is "
+                    "pulled, then re-run."
                 )
             # Backfill dosage form from the sheet's own column if missing.
             if not norm.get("dosage_form") and dosage_col is not None and row[dosage_col]:
                 norm["dosage_form"] = str(row[dosage_col]).strip()
 
-            result = classify_composition(norm, index)
+            result = classify_composition(norm, index, resolver=resolver)
             counts[result["classification"]] = counts.get(result["classification"], 0) + 1
 
             ws.cell(row=r, column=first_new + 0, value=json.dumps(norm, ensure_ascii=False))

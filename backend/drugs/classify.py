@@ -111,15 +111,63 @@ def normalize_form(form: str | None) -> str | None:
     return s.strip()
 
 
+# Concentration / percent / bare-number strength forms.
+_CONC_VOL_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*mg\s*(?:/|per)\s*(\d+(?:\.\d+)?)\s*ml", re.IGNORECASE)
+_CONC_PER_ML_RE = re.compile(r"(\d+(?:\.\d+)?)\s*mg\s*/\s*ml", re.IGNORECASE)
+_PCT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+_BARE_NUM_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*$")
+
+
 def normalize_strength(strength: str | None) -> str | None:
-    """'10 mg' / '10mg' -> '10mg'. Returns None if no number+unit present."""
+    """
+    Canonicalize a strength for comparison:
+      '10 mg' -> '10mg'
+      '200 mg/5 mL' -> '40mg/ml'   (concentration: amount / volume)
+      '4 mg/ml'     -> '4mg/ml'
+      '0.1 %'       -> '0.1%'
+      '100'         -> '100' (unit-less; matched numerically against NLEM)
+    Returns None when nothing numeric is present.
+    """
     if not strength:
         return None
+    m = _CONC_VOL_RE.search(strength)
+    if m:
+        return f"{float(m.group(1)) / float(m.group(2)):g}mg/ml"
+    m = _CONC_PER_ML_RE.search(strength)
+    if m:
+        return f"{float(m.group(1)):g}mg/ml"
+    m = _PCT_RE.search(strength)
+    if m:
+        return f"{float(m.group(1)):g}%"
     m = _STRENGTH_RE.search(strength)
-    if not m:
-        return None
-    unit = m.group(2).lower().rstrip("s")  # unit/units -> unit
-    return f"{float(m.group(1)):g}{unit}"
+    if m:
+        unit = m.group(2).lower().rstrip("s")  # unit/units -> unit
+        return f"{float(m.group(1)):g}{unit}"
+    m = _BARE_NUM_RE.match(strength)
+    if m:
+        return f"{float(m.group(1)):g}"
+    return None
+
+
+def strengths_match(product: str | None, nlem: str | None) -> bool:
+    """
+    Equal canonical strengths, a unit-less product number matching NLEM's
+    numeric value ('Capsule 100' vs '100 mg'), or a flat mg dose matching an
+    NLEM concentration of the same number (a 500 mg vial vs NLEM '500 mg/mL').
+    """
+    if product is None or nlem is None:
+        return False
+    if product == nlem:
+        return True
+    if _BARE_NUM_RE.match(product):
+        pn, nn = _numbers(product), _numbers(nlem)
+        return bool(pn) and pn == nn
+    pm = re.fullmatch(r"(\d+(?:\.\d+)?)mg", product)
+    nm = re.fullmatch(r"(\d+(?:\.\d+)?)mg/ml", nlem)
+    if pm and nm and float(pm.group(1)) == float(nm.group(1)):
+        return True
+    return False
 
 
 def _parse_variants(dosage_field: str):
@@ -130,7 +178,8 @@ def _parse_variants(dosage_field: str):
         if not line:
             continue
         m = _STRENGTH_RE.search(line)
-        strength = normalize_strength(m.group(0)) if m else None
+        # Pass the whole strength portion (incl. '/mL', '%') for canonicalization.
+        strength = normalize_strength(line[m.start():]) if m else None
         form_text = line[: m.start()] if m else line
         variants.add((normalize_form(form_text), strength))
     return variants
@@ -174,23 +223,36 @@ def _fmt(name, strength, form):
     return " ".join(bits)
 
 
-def _resolve(name_key: str, index: dict):
+def _resolve(raw_name: str, index: dict, resolver=None):
     """
-    Map a (normalized) molecule name to its canonical NLEM name.
-    Returns (canonical_name, was_fuzzy). Falls back to the input when no close
-    NLEM name exists.
+    Map a raw ingredient name to its canonical NLEM name.
+    Returns (canonical_name, method) where method is one of
+    "exact" | "fuzzy" | "lookup" | "none".
+
+    Deterministic exact/fuzzy first; on a miss, the optional `resolver`
+    (an LLM tool-grounded callable) is consulted. Its answer is only accepted
+    when it is a real NLEM member.
     """
-    if name_key in index["members"]:
-        return name_key, False
+    key = normalize_name(raw_name)
+    if key in index["members"]:
+        return key, "exact"
     close = difflib.get_close_matches(
-        name_key, index["members_list"], n=1, cutoff=FUZZY_CUTOFF)
+        key, index["members_list"], n=1, cutoff=FUZZY_CUTOFF)
     if close:
-        return close[0], True
-    return name_key, False
+        return close[0], "fuzzy"
+    if resolver is not None:
+        r = resolver(raw_name)
+        if r and r in index["members"]:
+            return r, "lookup"
+    return key, "none"
 
 
-def classify_composition(norm: dict, index: dict) -> dict:
-    """Apply the rules. `norm` is the normalize_composition() output."""
+def classify_composition(norm: dict, index: dict, resolver=None) -> dict:
+    """Apply the rules. `norm` is the normalize_composition() output.
+
+    `resolver`, if given, is an LLM name-resolver used only when deterministic
+    matching misses (see drugs.resolver.make_resolver).
+    """
     ingredients = norm.get("ingredients") or []
     raw_form = norm.get("dosage_form")
     form = normalize_form(raw_form)
@@ -198,13 +260,17 @@ def classify_composition(norm: dict, index: dict) -> dict:
     if not ingredients:
         return {"classification": "new drug", "reason": "No ingredients could be parsed from the composition."}
 
-    # Resolve each name to its canonical NLEM spelling (fuzzy if needed).
-    resolved = [_resolve(normalize_name(i["name"]), index) for i in ingredients]
+    # Resolve each name to its canonical NLEM spelling (fuzzy/lookup if needed).
+    resolved = [_resolve(i["name"], index, resolver) for i in ingredients]
     keys = [r[0] for r in resolved]
 
     def spell_note(i):
-        rkey, fuzzy = resolved[i]
-        return f" (read as NLEM '{rkey.title()}')" if fuzzy else ""
+        rkey, method = resolved[i]
+        if method == "fuzzy":
+            return f" (read as NLEM '{rkey.title()}')"
+        if method == "lookup":
+            return f" (resolved to NLEM '{rkey.title()}')"
+        return ""
 
     # --- single-ingredient formulation ---
     if len(ingredients) == 1:
@@ -221,7 +287,7 @@ def classify_composition(norm: dict, index: dict) -> dict:
         want_str = normalize_strength(ing.get("strength"))
         for entry, variants in entries:
             for vform, vstr in variants:
-                if vstr == want_str and forms_compatible(vform, form):
+                if strengths_match(want_str, vstr) and forms_compatible(vform, form):
                     return {"classification": "scheduled",
                             "reason": f"Exact NLEM match: {_fmt(ing['name'], ing.get('strength'), raw_form)} "
                                       f"= NLEM [{entry.sl_no}] {entry.medicine}{spell_note(0)}."}
