@@ -1,4 +1,38 @@
 from django.db import models
+from django.contrib.auth.models import User
+
+
+class ReportJob(models.Model):
+    """An uploaded client price sheet being classified against NLEM."""
+    STATUS_PENDING = "pending"
+    STATUS_RUNNING = "running"
+    STATUS_DONE = "done"
+    STATUS_FAILED = "failed"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_RUNNING, "Running"),
+        (STATUS_DONE, "Done"),
+        (STATUS_FAILED, "Failed"),
+    ]
+
+    excel_file = models.FileField(upload_to="report_uploads/")
+    original_name = models.CharField(max_length=255, blank=True)
+    sheet = models.CharField(max_length=120, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    total = models.PositiveIntegerField(default=0)
+    processed = models.PositiveIntegerField(default=0)
+    summary = models.JSONField(null=True, blank=True)
+    rows = models.JSONField(null=True, blank=True)
+    output_file = models.FileField(upload_to="report_outputs/", null=True, blank=True)
+    error = models.TextField(blank=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"ReportJob #{self.pk} ({self.original_name}) — {self.status}"
 
 
 class CeilingPrice(models.Model):
