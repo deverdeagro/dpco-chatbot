@@ -35,10 +35,16 @@ def _run_job(job_id: int) -> None:
         out_name = f"{stem}-classified.xlsx"
         out_path = os.path.join(out_dir, f"{job_id}_{out_name}")
 
-        def on_progress(done, total):
-            # Throttle DB writes: update every 5 rows (and the last).
+        def on_progress(done, total, rows, counts):
+            # Throttle DB writes: persist progress AND the rows-so-far every 5
+            # rows (and the last), so the UI can stream results as they classify.
             if done % 5 == 0 or done == total:
-                ReportJob.objects.filter(id=job_id).update(processed=done, total=total)
+                ReportJob.objects.filter(id=job_id).update(
+                    processed=done,
+                    total=total,
+                    rows=list(rows),
+                    summary={"total": total, "counts": dict(counts), "sheet": job.sheet or ""},
+                )
 
         rows, summary = classify_workbook(
             in_path, out_path, sheet=job.sheet or None, on_progress=on_progress)

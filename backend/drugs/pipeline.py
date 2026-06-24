@@ -29,7 +29,8 @@ def classify_workbook(input_path, output_path, sheet=None, on_progress=None):
       input_path:  path to the .xlsx to read.
       output_path: path to write the classified copy to.
       sheet:       sheet name; defaults to the first sheet.
-      on_progress: optional callable(processed, total) called as rows finish.
+      on_progress: optional callable(processed, total, rows, counts) called as
+                   rows finish, so callers can persist partial results live.
 
     Returns: (rows, summary)
       rows = [{"row", "brand", "composition", "classification", "reason"}, ...]
@@ -97,7 +98,7 @@ def classify_workbook(input_path, output_path, sheet=None, on_progress=None):
         })
 
         if on_progress:
-            on_progress(processed, total)
+            on_progress(processed, total, rows, counts)
 
     wb.save(output_path)
     return rows, {"total": total, "counts": counts, "sheet": sheet}

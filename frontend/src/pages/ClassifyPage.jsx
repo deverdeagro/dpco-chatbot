@@ -207,8 +207,29 @@ export default function ClassifyPage() {
             <div style={{ width: `${pct}%`, height: '100%', background: '#2563eb', transition: 'width .3s' }} />
           </div>
           <p className="drop-zone-hint" style={{ marginTop: 8 }}>
-            This runs an LLM per row — large reports take a few minutes.
+            This runs an LLM per row — large reports take a few minutes. Rows appear below as they’re classified.
           </p>
+
+          {/* Live results as rows finish */}
+          {rows.length > 0 && (
+            <div className="table-wrapper" style={{ maxHeight: 480, overflow: 'auto', marginTop: 16 }}>
+              <table className="users-table">
+                <thead>
+                  <tr><th>Brand</th><th>Composition</th><th>Classification</th><th>Reason</th></tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={r.row}>
+                      <td style={{ fontWeight: 600 }}>{r.brand || '—'}</td>
+                      <td style={{ fontSize: 13, color: '#475569' }}>{r.composition}</td>
+                      <td><Badge label={r.classification} /></td>
+                      <td style={{ fontSize: 12, color: '#64748b' }}>{r.reason}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
