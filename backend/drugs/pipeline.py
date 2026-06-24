@@ -67,17 +67,25 @@ def classify_workbook(input_path, output_path, sheet=None, on_progress=None):
     rows, counts = [], {}
     for processed, (r, row) in enumerate(data_rows, start=1):
         composition = str(row[comp_col]).strip()
-        norm = normalize_composition(composition)
-        if not norm.get("dosage_form") and dosage_col is not None and row[dosage_col]:
-            norm["dosage_form"] = str(row[dosage_col]).strip()
+        # A single unparseable/odd row must never abort the whole batch:
+        # record it as an "error" classification and keep going.
+        try:
+            norm = normalize_composition(composition)
+            if not norm.get("dosage_form") and dosage_col is not None and row[dosage_col]:
+                norm["dosage_form"] = str(row[dosage_col]).strip()
+            result = classify_composition(norm, index, resolver=resolver)
+            label = result["classification"]
+            reason = result["reason"]
+        except Exception as exc:  # noqa: BLE001
+            norm = {"error": str(exc)}
+            label = "error"
+            reason = f"Could not classify this row: {exc}"
 
-        result = classify_composition(norm, index, resolver=resolver)
-        label = result["classification"]
         counts[label] = counts.get(label, 0) + 1
 
         ws.cell(row=r, column=first_new + 0, value=json.dumps(norm, ensure_ascii=False))
         ws.cell(row=r, column=first_new + 1, value=label)
-        ws.cell(row=r, column=first_new + 2, value=result["reason"])
+        ws.cell(row=r, column=first_new + 2, value=reason)
 
         brand = row[brand_col] if brand_col is not None else None
         rows.append({
@@ -85,7 +93,7 @@ def classify_workbook(input_path, output_path, sheet=None, on_progress=None):
             "brand": str(brand).strip() if brand else "",
             "composition": composition,
             "classification": label,
-            "reason": result["reason"],
+            "reason": reason,
         })
 
         if on_progress:

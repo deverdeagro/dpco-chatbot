@@ -145,7 +145,7 @@ def normalize_composition(composition: str) -> dict:
             + _FEWSHOT
             + [{"role": "user", "content": composition}]
         ),
-        max_tokens=512,
+        max_tokens=2048,
         temperature=0,
         response_format={"type": "json_object"},
     )
