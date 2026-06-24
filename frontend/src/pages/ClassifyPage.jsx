@@ -186,6 +186,9 @@ export default function ClassifyPage() {
                           {h.status === 'done' && (
                             <button className="btn-secondary" onClick={() => openReport(h.id)}>Open</button>
                           )}
+                          {h.status === 'running' && (
+                            <button className="btn-secondary" onClick={() => openReport(h.id)}>View progress</button>
+                          )}
                         </td>
                       </tr>
                     ))}
